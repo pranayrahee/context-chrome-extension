@@ -1,8 +1,11 @@
+const DEBOUNCE_MS = 1200;
 let timeoutId = null;
-let lastSentKey = "";
+const sentKeys = new Set();
 
 function getText(node) {
-  return (node?.innerText || node?.textContent || "").trim();
+  return (node?.innerText || node?.textContent || "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function makeId(prompt, response) {
@@ -15,58 +18,101 @@ function makeId(prompt, response) {
   return "chatgpt_" + Math.abs(hash);
 }
 
-function extractChatGPT() {
-  const userNodes = document.querySelectorAll('[data-message-author-role="user"]');
-  const assistantNodes = document.querySelectorAll('[data-message-author-role="assistant"]');
+function getConversationPairs() {
+  const userNodes = Array.from(document.querySelectorAll('[data-message-author-role="user"]'));
+  const assistantNodes = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
 
-  if (!userNodes.length || !assistantNodes.length) {
-    console.log("AI Logger: no ChatGPT nodes yet");
-    return { prompt: "", response: "" };
-  }
+  const prompts = userNodes.map(getText).filter(Boolean);
+  const responses = assistantNodes.map(getText).filter(Boolean);
 
-  const prompt = getText(userNodes[userNodes.length - 1]);
-  const response = getText(assistantNodes[assistantNodes.length - 1]);
+  const pairCount = Math.min(prompts.length, responses.length);
+  const pairs = [];
 
-  return { prompt, response };
-}
+  for (let i = 0; i < pairCount; i++) {
+    const prompt = prompts[i];
+    const response = responses[i];
 
-function extractAndSend() {
-  try {
-    const { prompt, response } = extractChatGPT();
+    if (!prompt || !response) continue;
 
-    if (!prompt || !response) {
-      console.log("AI Logger: prompt or response empty");
-      return;
-    }
-
-    const key = prompt + "::" + response;
-    if (key === lastSentKey) {
-      return;
-    }
-    lastSentKey = key;
-
-    const payload = {
-      id: makeId(prompt, response),
-      platform: "chatgpt",
-      timestamp: new Date().toISOString(),
-      pageUrl: location.href,
+    pairs.push({
       prompt,
       response,
-      status: "logged"
-    };
+      key: prompt + "::" + response
+    });
+  }
 
-    console.log("AI Logger: sending payload", payload);
+  return pairs;
+}
 
-    chrome.runtime.sendMessage({ type: "LOG_INTERACTION", payload }, (result) => {
+function trimSentKeys() {
+  if (sentKeys.size <= 300) return;
+  const keys = Array.from(sentKeys);
+  const removeCount = sentKeys.size - 250;
+  for (let i = 0; i < removeCount; i++) {
+    sentKeys.delete(keys[i]);
+  }
+}
+
+function sendPair(prompt, response, key) {
+  const payload = {
+    id: makeId(prompt, response),
+    platform: "chatgpt",
+    timestamp: new Date().toISOString(),
+    pageUrl: location.href,
+    prompt,
+    response,
+    status: "logged"
+  };
+
+  chrome.runtime.sendMessage(
+    { type: "LOG_INTERACTION", payload },
+    (result) => {
       if (chrome.runtime.lastError) {
         console.error("AI Logger: sendMessage error", chrome.runtime.lastError.message);
         return;
       }
-      console.log("AI Logger: background replied", result);
-    });
+      console.log("AI Logger: logged pair", payload);
+    }
+  );
+}
+
+function scanAndSendAll() {
+  try {
+    const pairs = getConversationPairs();
+
+    if (!pairs.length) {
+      console.log("AI Logger: no complete pairs found");
+      return;
+    }
+
+    for (const pair of pairs) {
+      if (sentKeys.has(pair.key)) continue;
+
+      sentKeys.add(pair.key);
+      sendPair(pair.prompt, pair.response, pair.key);
+    }
+
+    trimSentKeys();
   } catch (err) {
-    console.error("AI Logger: extractAndSend failed", err);
+    console.error("AI Logger: scanAndSendAll failed", err);
   }
+}
+
+function hookPromptInput() {
+  const textarea = document.querySelector("textarea");
+  if (!textarea) {
+    setTimeout(hookPromptInput, 1000);
+    return;
+  }
+
+  textarea.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      setTimeout(scanAndSendAll, 1000);
+      setTimeout(scanAndSendAll, 2500);
+    }
+  });
+
+  console.log("AI Logger: textarea hooked");
 }
 
 function start() {
@@ -77,9 +123,11 @@ function start() {
     return;
   }
 
+  hookPromptInput();
+
   const observer = new MutationObserver(() => {
     clearTimeout(timeoutId);
-    timeoutId = setTimeout(extractAndSend, 2000);
+    timeoutId = setTimeout(scanAndSendAll, DEBOUNCE_MS);
   });
 
   observer.observe(document.body, {
@@ -87,7 +135,9 @@ function start() {
     subtree: true
   });
 
-  extractAndSend();
+  scanAndSendAll();
+  setTimeout(scanAndSendAll, 2000);
+  setTimeout(scanAndSendAll, 4000);
 }
 
 start();
