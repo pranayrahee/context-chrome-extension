@@ -1,143 +1,152 @@
-const DEBOUNCE_MS = 1200;
-let timeoutId = null;
-const sentKeys = new Set();
+if (window.__aiLoggerInitialized) {
+  console.log("AI Logger: already initialized");
+} else {
+  window.__aiLoggerInitialized = true;
 
-function getText(node) {
-  return (node?.innerText || node?.textContent || "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
+  const DEBOUNCE_MS = 1500;
+  let timeoutId = null;
+  const sentKeys = new Set();
 
-function makeId(prompt, response) {
-  const raw = prompt + "||" + response;
-  let hash = 0;
-  for (let i = 0; i < raw.length; i++) {
-    hash = (hash << 5) - hash + raw.charCodeAt(i);
-    hash |= 0;
+  function getText(node) {
+    return (node?.innerText || node?.textContent || "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
   }
-  return "chatgpt_" + Math.abs(hash);
-}
 
-function getConversationPairs() {
-  const userNodes = Array.from(document.querySelectorAll('[data-message-author-role="user"]'));
-  const assistantNodes = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
+  function makeId(prompt, response) {
+    const raw = prompt + "||" + response;
+    let hash = 0;
+    for (let i = 0; i < raw.length; i++) {
+      hash = (hash << 5) - hash + raw.charCodeAt(i);
+      hash |= 0;
+    }
+    return "chatgpt_" + Math.abs(hash);
+  }
 
-  const prompts = userNodes.map(getText).filter(Boolean);
-  const responses = assistantNodes.map(getText).filter(Boolean);
+  function getConversationPairs() {
+    const userNodes = Array.from(document.querySelectorAll('[data-message-author-role="user"]'));
+    const assistantNodes = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
 
-  const pairCount = Math.min(prompts.length, responses.length);
-  const pairs = [];
+    const prompts = userNodes.map(getText).filter(Boolean);
+    const responses = assistantNodes.map(getText).filter(Boolean);
 
-  for (let i = 0; i < pairCount; i++) {
-    const prompt = prompts[i];
-    const response = responses[i];
+    const pairCount = Math.min(prompts.length, responses.length);
+    const pairs = [];
 
-    if (!prompt || !response) continue;
+    for (let i = 0; i < pairCount; i++) {
+      const prompt = prompts[i];
+      const response = responses[i];
 
-    pairs.push({
+      if (!prompt || !response) continue;
+
+      pairs.push({
+        prompt,
+        response,
+        key: prompt + "::" + response
+      });
+    }
+
+    return pairs;
+  }
+
+  function trimSentKeys() {
+    if (sentKeys.size <= 500) return;
+    const keys = Array.from(sentKeys);
+    for (let i = 0; i < 200; i++) {
+      sentKeys.delete(keys[i]);
+    }
+  }
+
+  function sendPair(prompt, response, key) {
+    const payload = {
+      id: makeId(prompt, response),
+      platform: "chatgpt",
+      timestamp: new Date().toISOString(),
+      pageUrl: location.href,
       prompt,
       response,
-      key: prompt + "::" + response
+      status: "logged"
+    };
+
+    chrome.runtime.sendMessage({ type: "LOG_INTERACTION", payload }, (result) => {
+      if (chrome.runtime.lastError) {
+        console.error("AI Logger: sendMessage error", chrome.runtime.lastError.message);
+        sentKeys.delete(key);
+        return;
+      }
+
+      console.log("AI Logger: logged", payload);
     });
   }
 
-  return pairs;
-}
+  function scanAndSendAll() {
+    try {
+      const pairs = getConversationPairs();
 
-function trimSentKeys() {
-  if (sentKeys.size <= 300) return;
-  const keys = Array.from(sentKeys);
-  const removeCount = sentKeys.size - 250;
-  for (let i = 0; i < removeCount; i++) {
-    sentKeys.delete(keys[i]);
-  }
-}
-
-function sendPair(prompt, response, key) {
-  const payload = {
-    id: makeId(prompt, response),
-    platform: "chatgpt",
-    timestamp: new Date().toISOString(),
-    pageUrl: location.href,
-    prompt,
-    response,
-    status: "logged"
-  };
-
-  chrome.runtime.sendMessage(
-    { type: "LOG_INTERACTION", payload },
-    (result) => {
-      if (chrome.runtime.lastError) {
-        console.error("AI Logger: sendMessage error", chrome.runtime.lastError.message);
+      if (!pairs.length) {
+        console.log("AI Logger: no complete pairs found");
         return;
       }
-      console.log("AI Logger: logged pair", payload);
+
+      for (const pair of pairs) {
+        if (sentKeys.has(pair.key)) continue;
+        sentKeys.add(pair.key);
+        sendPair(pair.prompt, pair.response, pair.key);
+      }
+
+      trimSentKeys();
+    } catch (err) {
+      console.error("AI Logger: scanAndSendAll failed", err);
     }
-  );
-}
+  }
 
-function scanAndSendAll() {
-  try {
-    const pairs = getConversationPairs();
+  function scheduleScan() {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(scanAndSendAll, DEBOUNCE_MS);
+  }
 
-    if (!pairs.length) {
-      console.log("AI Logger: no complete pairs found");
+  function hookPromptInput() {
+    const textarea = document.querySelector("textarea");
+    if (!textarea) {
+      setTimeout(hookPromptInput, 1000);
       return;
     }
 
-    for (const pair of pairs) {
-      if (sentKeys.has(pair.key)) continue;
+    textarea.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        setTimeout(scanAndSendAll, 800);
+        setTimeout(scanAndSendAll, 2500);
+        setTimeout(scanAndSendAll, 5000);
+      }
+    });
 
-      sentKeys.add(pair.key);
-      sendPair(pair.prompt, pair.response, pair.key);
+    console.log("AI Logger: textarea hooked");
+  }
+
+  function start() {
+    console.log("AI Logger: initialized on", location.href);
+
+    if (!document.body) {
+      setTimeout(start, 500);
+      return;
     }
 
-    trimSentKeys();
-  } catch (err) {
-    console.error("AI Logger: scanAndSendAll failed", err);
-  }
-}
+    hookPromptInput();
 
-function hookPromptInput() {
-  const textarea = document.querySelector("textarea");
-  if (!textarea) {
-    setTimeout(hookPromptInput, 1000);
-    return;
-  }
+    const observer = new MutationObserver(() => {
+      scheduleScan();
+    });
 
-  textarea.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      setTimeout(scanAndSendAll, 1000);
-      setTimeout(scanAndSendAll, 2500);
-    }
-  });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true
+    });
 
-  console.log("AI Logger: textarea hooked");
-}
-
-function start() {
-  console.log("AI Logger: content script loaded on", location.href);
-
-  if (!document.body) {
-    setTimeout(start, 500);
-    return;
+    scanAndSendAll();
+    setTimeout(scanAndSendAll, 2000);
+    setTimeout(scanAndSendAll, 4000);
   }
 
-  hookPromptInput();
-
-  const observer = new MutationObserver(() => {
-    clearTimeout(timeoutId);
-    timeoutId = setTimeout(scanAndSendAll, DEBOUNCE_MS);
-  });
-
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true
-  });
-
-  scanAndSendAll();
-  setTimeout(scanAndSendAll, 2000);
-  setTimeout(scanAndSendAll, 4000);
+  start();
 }
-
-start();
