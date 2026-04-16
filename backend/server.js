@@ -14,6 +14,29 @@ app.get("/", (req, res) => {
   res.json({ ok: true, message: "Backend running" });
 });
 
+app.get("/logs", (req, res) => {
+  try {
+    if (!fs.existsSync(LOG_FILE)) {
+      return res.json([]);
+    }
+
+    const content = fs.readFileSync(LOG_FILE, "utf8").trim();
+    if (!content) {
+      return res.json([]);
+    }
+
+    const logs = content
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+
+    res.json(logs);
+  } catch (error) {
+    console.error("Read logs error:", error);
+    res.status(500).json({ ok: false, error: "Failed to read logs" });
+  }
+});
+
 app.post("/log", (req, res) => {
   const { id, platform, timestamp, pageUrl, prompt, response, status } = req.body;
 
