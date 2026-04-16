@@ -38,14 +38,15 @@ app.get("/logs", (req, res) => {
 });
 
 app.post("/log", (req, res) => {
-  const { id, platform, timestamp, pageUrl, prompt, response, status } = req.body;
+  const { id, clientId, platform, timestamp, pageUrl, prompt, response, status } = req.body;
 
-  if (!platform || !timestamp || !prompt || !response) {
+  if (!clientId || !platform || !timestamp || !prompt || !response) {
     return res.status(400).json({ ok: false, error: "Missing required fields" });
   }
 
   const entry = {
     id: id || null,
+    clientId,
     platform,
     timestamp,
     pageUrl: pageUrl || "",
@@ -60,7 +61,7 @@ app.post("/log", (req, res) => {
       return res.status(500).json({ ok: false, error: "Write failed" });
     }
 
-    console.log(`[${platform}] logged at ${timestamp}`);
+    console.log(`[${platform}] [${clientId}] logged at ${timestamp}`);
     res.json({ ok: true, stored: true });
   });
 });
